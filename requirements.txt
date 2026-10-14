@@ -1,8 +1,10 @@
 prometheus-client>=0.19.0
-influxdb-client>=1.38.0
-pms5003==0.0.5
 pimoroni-bme280>=1.0.0
-enviroplus>=0.0.6
-RPi.GPIO>=0.7.1
-smbus>=1.1.post2
-requests>=2.31.0
+pms5003>=1.0.0
+ltr559>=1.0.0
+# enviroplus provides gas.py; pip also installs its other dependencies (sounddevice, st7735, numpy ...).
+# The Debian package avoids that by bundling gas.py only (see vendor/VENDORED.md).
+enviroplus>=1.0.2
+smbus2>=0.4.3
+pyserial>=3.5
+gpiod>=2.1.3

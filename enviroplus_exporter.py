@@ -1,41 +1,23 @@
 #!/usr/bin/env python3
 import os
-import random
-import requests
 import time
 import logging
 import argparse
-import subprocess
 import serial
-from threading import Thread
 
 from prometheus_client import start_http_server, Gauge, Histogram
 
 from bme280 import BME280
 from enviroplus import gas
+from ltr559 import LTR559
 from pms5003 import PMS5003, ReadTimeoutError as pmsReadTimeoutError, SerialTimeoutError as pmsSerialTimeoutError
+from smbus2 import SMBus
 
-from influxdb_client import InfluxDBClient, Point
-from influxdb_client.client.write_api import SYNCHRONOUS
-
-
-try:
-    from smbus2 import SMBus
-except ImportError:
-    from smbus import SMBus
-
-try:
-    # Transitional fix for breaking change in LTR559
-    from ltr559 import LTR559
-    ltr559 = LTR559()
-except ImportError:
-    import ltr559
-
+# Log to stderr only (journald under systemd). The upstream FileHandler wrote an
+# unbounded enviroplus_exporter.log into the working directory.
 logging.basicConfig(
     format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s',
     level=logging.INFO,
-    handlers=[logging.FileHandler("enviroplus_exporter.log"),
-              logging.StreamHandler()],
     datefmt='%Y-%m-%d %H:%M:%S')
 
 logging.info("""enviroplus_exporter.py - Expose readings from the Enviro+ sensor by Pimoroni in Prometheus format
@@ -46,19 +28,26 @@ Press Ctrl+C to exit!
 
 DEBUG = os.getenv('DEBUG', 'false') == 'true'
 
+# Minimum seconds per main-loop pass. With a PMS5003 attached the loop is paced by the
+# sensor (about 1 Hz) and this never sleeps; it only stops a busy loop when the PMS5003
+# is absent, failing fast, or the exporter runs with --enviro.
+MIN_LOOP_SECONDS = 0.25
+
 bus = SMBus(1)
 bme280 = BME280(i2c_dev=bus)
+ltr559 = LTR559()
 try:
     pms5003 = PMS5003()
 except serial.serialutil.SerialException:
     logging.warning("Failed to initialise PMS5003.")
+    pms5003 = None
 
 TEMPERATURE = Gauge('temperature','Temperature measured (*C)')
 PRESSURE = Gauge('pressure','Pressure measured (hPa)')
 HUMIDITY = Gauge('humidity','Relative humidity measured (%)')
 OXIDISING = Gauge('oxidising','Mostly nitrogen dioxide but could include NO and Hydrogen (Ohms)')
 REDUCING = Gauge('reducing', 'Mostly carbon monoxide but could include H2S, Ammonia, Ethanol, Hydrogen, Methane, Propane, Iso-butane (Ohms)')
-NH3 = Gauge('NH3', 'mostly Ammonia but could also include Hydrogen, Ethanol, Propane, Iso-butane (Ohms)') 
+NH3 = Gauge('NH3', 'mostly Ammonia but could also include Hydrogen, Ethanol, Propane, Iso-butane (Ohms)')
 LUX = Gauge('lux', 'current ambient light level (lux)')
 PROXIMITY = Gauge('proximity', 'proximity, with larger numbers being closer proximity and vice versa')
 PM1 = Gauge('PM1', 'Particulate Matter of diameter less than 1 micron. Measured in micrograms per cubic metre (ug/m3)')
@@ -73,23 +62,10 @@ PM1_HIST = Histogram('pm1_measurements', 'Histogram of Particulate Matter of dia
 PM25_HIST = Histogram('pm25_measurements', 'Histogram of Particulate Matter of diameter less than 2.5 micron measurements', buckets=(0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100))
 PM10_HIST = Histogram('pm10_measurements', 'Histogram of Particulate Matter of diameter less than 10 micron measurements', buckets=(0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100))
 
-# Setup InfluxDB
-# You can generate an InfluxDB Token from the Tokens Tab in the InfluxDB Cloud UI
-INFLUXDB_URL = os.getenv('INFLUXDB_URL', '')
-INFLUXDB_TOKEN = os.getenv('INFLUXDB_TOKEN', '')
-INFLUXDB_ORG_ID = os.getenv('INFLUXDB_ORG_ID', '')
-INFLUXDB_BUCKET = os.getenv('INFLUXDB_BUCKET', '')
-INFLUXDB_SENSOR_LOCATION = os.getenv('INFLUXDB_SENSOR_LOCATION', 'Adelaide')
-INFLUXDB_TIME_BETWEEN_POSTS = int(os.getenv('INFLUXDB_TIME_BETWEEN_POSTS', '5'))
-influxdb_client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG_ID)
-influxdb_api = influxdb_client.write_api(write_options=SYNCHRONOUS)
-
-# Setup Luftdaten
-LUFTDATEN_TIME_BETWEEN_POSTS = int(os.getenv('LUFTDATEN_TIME_BETWEEN_POSTS', '30'))
-
-# Sometimes the sensors can't be read. Resetting the i2c 
+# Sometimes the sensors can't be read. Back off before the next attempt.
+# (Upstream ran `i2cdetect -y 1` here, which probes every address on the bus and needs
+# the i2c-tools package; a pause is all that is left.)
 def reset_i2c():
-    subprocess.run(['i2cdetect', '-y', '1'])
     time.sleep(2)
 
 
@@ -104,7 +80,12 @@ def get_temperature(factor):
     """Get temperature from the weather sensor"""
     # Tuning factor for compensation. Decrease this number to adjust the
     # temperature down, and increase to adjust up
-    raw_temp = bme280.get_temperature()
+    try:
+        raw_temp = bme280.get_temperature()
+    except IOError:
+        logging.error("Could not get temperature readings. Resetting i2c.")
+        reset_i2c()
+        return
 
     if factor:
         cpu_temps = [get_cpu_temperature()] * 5
@@ -167,6 +148,8 @@ def get_light():
 
 def get_particulates():
     """Get the particulate matter readings"""
+    if pms5003 is None:
+        return
     try:
         pms_data = pms5003.read()
     except pmsReadTimeoutError:
@@ -198,83 +181,6 @@ def collect_all_data():
     sensor_data['pm10'] = PM10.collect()[0].samples[0].value
     return sensor_data
 
-def post_to_influxdb():
-    """Post all sensor data to InfluxDB"""
-    name = 'enviroplus'
-    tag = ['location', 'adelaide']
-    while True:
-        time.sleep(INFLUXDB_TIME_BETWEEN_POSTS)
-        data_points = []
-        epoch_time_now = round(time.time())
-        sensor_data = collect_all_data()
-        for field_name in sensor_data:
-            data_points.append(Point('enviroplus').tag('location', INFLUXDB_SENSOR_LOCATION).field(field_name, sensor_data[field_name]))
-        try:
-            influxdb_api.write(bucket=INFLUXDB_BUCKET, record=data_points)
-            if DEBUG:
-                logging.info('InfluxDB response: OK')
-        except Exception as exception:
-            logging.warning('Exception sending to InfluxDB: {}'.format(exception))
-
-def post_to_luftdaten():
-    """Post relevant sensor data to luftdaten.info"""
-    """Code from: https://github.com/sepulworld/balena-environ-plus"""
-    LUFTDATEN_SENSOR_UID = 'raspi-' + get_serial_number()
-    while True:
-        time.sleep(LUFTDATEN_TIME_BETWEEN_POSTS)
-        sensor_data = collect_all_data()
-        values = {}
-        values["P2"] = sensor_data['pm25']
-        values["P1"] = sensor_data['pm10']
-        values["temperature"] = "{:.2f}".format(sensor_data['temperature'])
-        values["pressure"] = "{:.2f}".format(sensor_data['pressure'] * 100)
-        values["humidity"] = "{:.2f}".format(sensor_data['humidity'])
-        pm_values = dict(i for i in values.items() if i[0].startswith('P'))
-        temperature_values = dict(i for i in values.items() if not i[0].startswith('P'))
-        try:
-            response_pin_1 = requests.post('https://api.luftdaten.info/v1/push-sensor-data/',
-                json={
-                    "software_version": "enviro-plus 0.0.1",
-                    "sensordatavalues": [{"value_type": key, "value": val} for
-                                        key, val in pm_values.items()]
-                },
-                headers={
-                    "X-PIN":    "1",
-                    "X-Sensor": LUFTDATEN_SENSOR_UID,
-                    "Content-Type": "application/json",
-                    "cache-control": "no-cache"
-                }
-            )
-
-            response_pin_11 = requests.post('https://api.luftdaten.info/v1/push-sensor-data/',
-                    json={
-                        "software_version": "enviro-plus 0.0.1",
-                        "sensordatavalues": [{"value_type": key, "value": val} for
-                                            key, val in temperature_values.items()]
-                    },
-                    headers={
-                        "X-PIN":    "11",
-                        "X-Sensor": LUFTDATEN_SENSOR_UID,
-                        "Content-Type": "application/json",
-                        "cache-control": "no-cache"
-                    }
-            )
-
-            if response_pin_1.ok and response_pin_11.ok:
-                if DEBUG:
-                    logging.info('Luftdaten response: OK')
-            else:
-                logging.warning('Luftdaten response: Failed')
-        except Exception as exception:
-            logging.warning('Exception sending to Luftdaten: {}'.format(exception))
-
-def get_serial_number():
-    """Get Raspberry Pi serial number to use as LUFTDATEN_SENSOR_UID"""
-    with open('/proc/cpuinfo', 'r') as f:
-        for line in f:
-            if line[0:6] == 'Serial':
-                return str(line.split(":")[1].strip())
-
 def str_to_bool(value):
     if value.lower() in {'false', 'f', '0', 'no', 'n'}:
         return False
@@ -289,14 +195,18 @@ if __name__ == '__main__':
     parser.add_argument("-p", "--port", metavar='PORT', default=8000, type=int, help="Specify alternate port [default: 8000]")
     parser.add_argument("-f", "--factor", metavar='FACTOR', type=float, help="The compensation factor to get better temperature results when the Enviro+ pHAT is too close to the Raspberry Pi board")
     parser.add_argument("-e", "--enviro", metavar='ENVIRO', type=str_to_bool, help="Device is an Enviro (not Enviro+) so don't fetch data from gas and particulate sensors as they don't exist")
-    parser.add_argument("-d", "--debug", metavar='DEBUG', type=str_to_bool, help="Turns on more verbose logging, showing sensor output and post responses [default: false]")
-    parser.add_argument("-i", "--influxdb", metavar='INFLUXDB', type=str_to_bool, default='false', help="Post sensor data to InfluxDB [default: false]")
-    parser.add_argument("-l", "--luftdaten", metavar='LUFTDATEN', type=str_to_bool, default='false', help="Post sensor data to Luftdaten [default: false]")
+    parser.add_argument("-d", "--debug", metavar='DEBUG', type=str_to_bool, help="Turns on more verbose logging, showing sensor output [default: false]")
+    # InfluxDB and Luftdaten support was removed. The flags are still accepted as "false"
+    # so existing unit files and Helm values keep starting; "true" is an error.
+    parser.add_argument("-i", "--influxdb", metavar='INFLUXDB', type=str_to_bool, default='false', help=argparse.SUPPRESS)
+    parser.add_argument("-l", "--luftdaten", metavar='LUFTDATEN', type=str_to_bool, default='false', help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.influxdb or args.luftdaten:
+        parser.error("InfluxDB and Luftdaten posting were removed from this fork; export via Prometheus only")
 
     # Start up the server to expose the metrics.
     start_http_server(addr=args.bind, port=args.port)
-    # Generate some requests.
 
     if args.debug:
         DEBUG = True
@@ -304,22 +214,10 @@ if __name__ == '__main__':
     if args.factor:
         logging.info("Using compensating algorithm (factor={}) to account for heat leakage from Raspberry Pi board".format(args.factor))
 
-    if args.influxdb:
-        # Post to InfluxDB in another thread
-        logging.info("Sensor data will be posted to InfluxDB every {} seconds".format(INFLUXDB_TIME_BETWEEN_POSTS))
-        influx_thread = Thread(target=post_to_influxdb)
-        influx_thread.start()
-
-    if args.luftdaten:
-        # Post to Luftdaten in another thread
-        LUFTDATEN_SENSOR_UID = 'raspi-' + get_serial_number()
-        logging.info("Sensor data will be posted to Luftdaten every {} seconds for the UID {}".format(LUFTDATEN_TIME_BETWEEN_POSTS, LUFTDATEN_SENSOR_UID))
-        luftdaten_thread = Thread(target=post_to_luftdaten)
-        luftdaten_thread.start()
-
     logging.info("Listening on http://{}:{}".format(args.bind, args.port))
 
     while True:
+        loop_start = time.monotonic()
         get_temperature(args.factor)
         get_pressure()
         get_humidity()
@@ -329,3 +227,6 @@ if __name__ == '__main__':
             get_particulates()
         if DEBUG:
             logging.info('Sensor data: {}'.format(collect_all_data()))
+        spare = MIN_LOOP_SECONDS - (time.monotonic() - loop_start)
+        if spare > 0:
+            time.sleep(spare)
