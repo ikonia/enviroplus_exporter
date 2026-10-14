@@ -1,0 +1,39 @@
+Source: enviroplus-exporter
+Section: misc
+Priority: optional
+Maintainer: ikonia <ikonia@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), dh-python, python3
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/ikonia/enviroplus_exporter
+
+Package: enviroplus-exporter
+Architecture: all
+Depends: ${misc:Depends}, ${python3:Depends},
+ python3 (>= 3.11),
+ python3-libgpiod (>= 2.1.3),
+ python3-smbus2,
+ python3-serial,
+ python3-prometheus-client
+Description: Prometheus exporter for the Pimoroni Enviro+ sensor board
+ Exposes the BME280 (temperature, pressure, humidity), LTR559 (light, proximity),
+ MICS6814 (gas) and PMS5003 (particulates) readings on an HTTP port for Prometheus.
+ .
+ A lean fork of tijmenvandenbrink/enviroplus_exporter: InfluxDB and Luftdaten
+ posting are removed, and the Pimoroni libraries it needs are bundled in a private
+ directory (/usr/lib/enviroplus), so no virtualenv, pip, numpy or build tools are needed.
+
+Package: enviroplus-lcd
+Architecture: all
+Depends: ${misc:Depends}, ${python3:Depends},
+ enviroplus-exporter (= ${binary:Version}),
+ python3 (>= 3.11),
+ python3-numpy,
+ python3-pil,
+ python3-spidev,
+ fonts-roboto-unhinted
+Description: Clock display for the Pimoroni Enviro+ 0.96" LCD
+ Shows the host name and time on the Enviro+ ST7735 display. Optional: it pulls
+ in numpy and Pillow, which the exporter itself does not need. The unit only
+ starts when /dev/spidev0.1 exists, so the SPI interface (dtparam=spi=on in
+ /boot/firmware/config.txt) must be enabled.

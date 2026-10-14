@@ -1,0 +1,26 @@
+[Unit]
+Description=Enviro+ LCD clock display
+Documentation=https://github.com/ikonia/enviroplus_exporter
+# Skipped (not failed) when SPI is not enabled
+ConditionPathExists=/dev/spidev0.1
+
+[Service]
+User=enviroplus
+Group=enviroplus
+# spi: /dev/spidev0.1, gpio: data/command and backlight pins
+SupplementaryGroups=spi gpio
+ExecStart=/usr/bin/python3 -B /usr/lib/enviroplus/enviroplus_lcd.py
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

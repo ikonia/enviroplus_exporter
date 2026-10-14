@@ -1,0 +1,2 @@
+lcd/enviroplus_lcd.py usr/lib/enviroplus/
+vendor/lcd/* usr/lib/enviroplus/

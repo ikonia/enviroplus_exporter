@@ -1,0 +1,26 @@
+[Unit]
+Description=Enviro+ Prometheus exporter
+Documentation=https://github.com/ikonia/enviroplus_exporter
+After=network.target
+
+[Service]
+User=enviroplus
+Group=enviroplus
+# i2c: BME280/LTR559/ADS1015, gpio: PMS5003 reset/enable and gas heater, dialout: /dev/ttyAMA0 (PMS5003)
+SupplementaryGroups=i2c gpio dialout
+EnvironmentFile=-/etc/default/enviroplus-exporter
+ExecStart=/usr/bin/python3 -B /usr/lib/enviroplus/enviroplus_exporter.py $ENVIROPLUS_EXPORTER_ARGS
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

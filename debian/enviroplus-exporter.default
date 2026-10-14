@@ -1,0 +1,4 @@
+# Arguments for enviroplus-exporter.service. Run `enviroplus-exporter --help` for the full list.
+#   --factor   heat-compensation factor for the BME280 temperature (this fleet: 1.75)
+#   --enviro   true on a plain Enviro (no gas or particulate sensors)
+ENVIROPLUS_EXPORTER_ARGS="--factor 1.75 --bind 0.0.0.0 --port 8000"

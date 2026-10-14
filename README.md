@@ -51,6 +51,19 @@
 
 
 <!-- TABLE OF CONTENTS -->
+## This fork: lean build and Debian packages
+
+This fork is trimmed for a fleet of Raspberry Pi Zero 2 W nodes running Debian 13 (trixie) on 512 MB of RAM.
+
+- **Removed:** InfluxDB and Luftdaten posting, and with them the `influxdb-client`, `requests`, `RPi.GPIO` and `smbus` dependencies. Importing `influxdb_client` alone pulled in numpy (about 35 MB of Python memory and a 2.5 s start). The `--influxdb` and `--luftdaten` flags are still accepted as `false` so existing unit files keep working; `true` is an error.
+- **Changed:** logs go to stderr/journald only (no `enviroplus_exporter.log`); an I2C error while reading the temperature no longer kills the process; a missing PMS5003 no longer crashes the loop; the `i2cdetect -y 1` "reset" is replaced by a pause; the main loop has a 0.25 s minimum period. Metric names and values are unchanged.
+- **Packaging:** `debian/` builds two packages from this tree.
+  - `enviroplus-exporter` ships the exporter, the Pimoroni libraries it needs (`vendor/`, hash-pinned, see `vendor/VENDORED.md`) in `/usr/lib/enviroplus`, a systemd unit with `Restart=on-failure`, and `/etc/default/enviroplus-exporter` for the arguments. It depends on Debian's `python3-libgpiod`, `python3-smbus2`, `python3-serial` and `python3-prometheus-client`. There is no virtualenv, pip or build step on the node.
+  - `enviroplus-lcd` is optional: a clock for the Enviro+ LCD, which adds numpy, Pillow, spidev and a Roboto font. Its unit only starts when `/dev/spidev0.1` exists.
+- **Boot configuration the board needs:** `dtparam=i2c_arm=on`, `enable_uart=1`, `dtoverlay=disable-bt` (PMS5003 on `/dev/ttyAMA0`). Add `dtparam=spi=on` only for the LCD. The `adau7002-simple` microphone overlay and `libportaudio2` that the Pimoroni installer adds are not needed.
+
+Build (on Debian trixie, any architecture, the packages are `all`): `sudo apt install debhelper dh-python devscripts && dpkg-buildpackage -us -uc -b`. The `.deb` files are written to the parent directory.
+
 ## Table of Contents
 
 * [About the Project](#about-the-project)

@@ -1,0 +1,3 @@
+enviroplus_exporter.py usr/lib/enviroplus/
+vendor/exporter/* usr/lib/enviroplus/
+bin/enviroplus-exporter usr/bin/

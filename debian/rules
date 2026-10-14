@@ -1,0 +1,7 @@
+#!/usr/bin/make -f
+%:
+	dh $@ --with python3
+
+# The libraries live in a private directory, not /usr/lib/python3/dist-packages.
+override_dh_python3:
+	dh_python3 /usr/lib/enviroplus

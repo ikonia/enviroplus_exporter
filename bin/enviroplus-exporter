@@ -1,0 +1,3 @@
+#!/bin/sh
+# Run the packaged exporter by hand, e.g.: sudo -u enviroplus enviroplus-exporter --help
+exec /usr/bin/python3 -B /usr/lib/enviroplus/enviroplus_exporter.py "$@"

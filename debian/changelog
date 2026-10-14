@@ -1,0 +1,12 @@
+enviroplus-exporter (0.1.0) unstable; urgency=medium
+
+  * First Debian package of the lean fork.
+  * Remove InfluxDB and Luftdaten support (and the influxdb-client, requests,
+    RPi.GPIO and smbus dependencies). The -i/-l flags still accept "false".
+  * Log to stderr/journald only; no enviroplus_exporter.log in the working directory.
+  * Catch I2C errors when reading the temperature; do not crash when the PMS5003 is absent.
+  * Replace the `i2cdetect -y 1` "reset" with a pause; add a minimum loop period.
+  * Bundle the Pimoroni libraries (vendor/) in /usr/lib/enviroplus.
+  * Add the optional enviroplus-lcd package (clock display).
+
+ -- ikonia <ikonia@users.noreply.github.com>  Wed, 14 Oct 2026 18:50:00 +0000
